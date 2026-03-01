@@ -2,8 +2,6 @@
 
 An interactive browser-based ReAct (Reasoning + Acting) agent that solves maths problems step-by-step using a local Ollama LLM. The agent visualises its Thought → Action → Observation reasoning loop in real time, giving full transparency into how it breaks down and solves problems.
 
-**UID:** `85e4705d805705f00250657a158cb0e07103b848`
-
 🔗 **Live demo:** [brendanjameslynskey.github.io/ReAct_math_agent](https://brendanjameslynskey.github.io/ReAct_math_agent/)
 
 ## How It Works
