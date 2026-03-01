@@ -316,6 +316,9 @@ function LogEntry({ step, firstTs, mono }) {
 function ReActMathAgent() {
   const [ollamaBase, setOllamaBase] = useState("http://localhost:11434");
   const [model, setModel] = useState("qwen3");
+  const [availableModels, setAvailableModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(null);
   const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState([]);
@@ -327,6 +330,44 @@ function ReActMathAgent() {
   const scrollRef = useRef(null);
   const finishedRef = useRef(false);
   const MAX_LOOPS = 12;
+
+  // Fetch available models from Ollama
+  const fetchModels = useCallback(async (base) => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const url = `${base.replace(/\/+$/, "")}/api/tags`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`${resp.status}`);
+      const data = await resp.json();
+      const models = (data.models || []).map((m) => m.name).sort();
+      setAvailableModels(models);
+      // If current model isn't in list, select the first available
+      if (models.length && !models.includes(model)) {
+        // Check if there's a qwen3 variant, prefer that
+        const qwen = models.find((m) => m.startsWith("qwen3"));
+        setModel(qwen || models[0]);
+      }
+    } catch (e) {
+      setModelsError(e.message);
+      setAvailableModels([]);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [model]);
+
+  // Fetch on mount
+  useEffect(() => {
+    fetchModels(ollamaBase);
+  }, []);
+
+  // Debounced fetch when URL changes
+  const urlTimerRef = useRef(null);
+  const handleBaseChange = useCallback((newBase) => {
+    setOllamaBase(newBase);
+    clearTimeout(urlTimerRef.current);
+    urlTimerRef.current = setTimeout(() => fetchModels(newBase), 800);
+  }, [fetchModels]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -469,26 +510,63 @@ function ReActMathAgent() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <label style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: ".06em", fontFamily: mono }}>Endpoint</label>
+            <label style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: ".06em", fontFamily: mono }}>Ollama URL</label>
             <input
               style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, color: "#e2e8f0", padding: "5px 10px", fontSize: 12, fontFamily: mono, outline: "none", width: 200 }}
               value={ollamaBase}
-              onChange={(e) => setOllamaBase(e.target.value)}
+              onChange={(e) => handleBaseChange(e.target.value)}
+              title="Base URL of your Ollama instance (uses /api/chat endpoint)"
+              placeholder="http://localhost:11434"
             />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <label style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: ".06em", fontFamily: mono }}>Model</label>
-            <select
-              style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, color: "#e2e8f0", padding: "5px 10px", fontSize: 12, fontFamily: mono, outline: "none", width: 260, cursor: "pointer" }}
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              <option value="qwen3">qwen3</option>
-              <option value="qwen3-coder_30b_temp0_unslothfix">qwen3-coder (30B unslothfix)</option>
-            </select>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 4 }}>
+              <select
+                style={{ background: "#1e293b", border: `1px solid ${modelsError ? "#ef4444" : "#334155"}`, borderRadius: 6, color: "#e2e8f0", padding: "5px 10px", fontSize: 12, fontFamily: mono, outline: "none", width: 260, cursor: "pointer" }}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              >
+                {availableModels.length === 0 && (
+                  <option value={model}>{modelsLoading ? "Loading…" : model + (modelsError ? " (offline)" : "")}</option>
+                )}
+                {availableModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => fetchModels(ollamaBase)}
+                disabled={modelsLoading}
+                title="Refresh model list from Ollama"
+                style={{
+                  background: "#1e293b", border: "1px solid #334155", borderRadius: 6,
+                  color: modelsLoading ? "#475569" : "#94a3b8", padding: "4px 8px",
+                  cursor: modelsLoading ? "wait" : "pointer", fontSize: 14, lineHeight: 1,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >
+                <span style={{ display: "inline-block", animation: modelsLoading ? "spin 1s linear infinite" : "none" }}>↻</span>
+              </button>
+            </div>
+            {modelsError && (
+              <span style={{ fontSize: 9, color: "#ef4444", fontFamily: mono }}>Can't reach Ollama</span>
+            )}
+            {!modelsError && availableModels.length > 0 && (
+              <span style={{ fontSize: 9, color: "#475569", fontFamily: mono }}>{availableModels.length} models</span>
+            )}
           </div>
         </div>
       </header>
+
+      {/* Ollama info bar */}
+      <div style={{ padding: "6px 24px", background: "#0f172a", borderBottom: "1px solid #1e293b", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 10, color: "#f59e0b", fontFamily: mono }}>ℹ</span>
+        <span style={{ fontSize: 10, color: "#64748b", fontFamily: mono, lineHeight: 1.4 }}>
+          Requires a local <a href="https://ollama.com" target="_blank" rel="noopener" style={{ color: "#94a3b8", textDecoration: "underline" }}>Ollama</a> instance
+          with CORS enabled (<code style={{ color: "#94a3b8", background: "#1e293b", padding: "1px 4px", borderRadius: 3 }}>OLLAMA_ORIGINS=*</code>).
+          Uses Ollama's <code style={{ color: "#94a3b8", background: "#1e293b", padding: "1px 4px", borderRadius: 3 }}>/api/chat</code> endpoint — not compatible with OpenAI, vLLM, or other API formats.
+        </span>
+      </div>
 
       {/* Pipeline Visualiser */}
       <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "10px 24px", background: "#0f172a88", borderBottom: "1px solid #1e293b", overflowX: "auto" }}>
