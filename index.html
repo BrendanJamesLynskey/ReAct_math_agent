@@ -355,10 +355,10 @@ function ReActMathAgent() {
   const [finalAnswer, setFinalAnswer] = useState(null);
   const [error, setError] = useState(null);
   const [loopCount, setLoopCount] = useState(0);
+  const [maxLoops, setMaxLoops] = useState(12);
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
   const finishedRef = useRef(false);
-  const MAX_LOOPS = 12;
 
   // Fetch available models from Ollama
   const fetchModels = useCallback(async (base) => {
@@ -430,7 +430,7 @@ function ReActMathAgent() {
     let loops = 0;
 
     try {
-      while (loops < MAX_LOOPS && !finishedRef.current) {
+      while (loops < maxLoops && !finishedRef.current) {
         loops++;
         setLoopCount(loops);
 
@@ -488,8 +488,8 @@ function ReActMathAgent() {
         }
       }
 
-      if (!finishedRef.current && loops >= MAX_LOOPS) {
-        addStep(STAGE.ERROR, `Reached maximum loop count (${MAX_LOOPS})`);
+      if (!finishedRef.current && loops >= maxLoops) {
+        addStep(STAGE.ERROR, `Reached maximum loop count (${maxLoops})`);
         setCurrentStage(STAGE.ERROR);
       }
     } catch (e) {
@@ -584,6 +584,18 @@ function ReActMathAgent() {
               <span style={{ fontSize: 9, color: "#475569", fontFamily: mono }}>{availableModels.length} models</span>
             )}
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <label style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: ".06em", fontFamily: mono }}>Max Loops</label>
+            <input
+              type="number"
+              min="1"
+              max="50"
+              value={maxLoops}
+              onChange={(e) => setMaxLoops(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+              style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, color: "#e2e8f0", padding: "5px 10px", fontSize: 12, fontFamily: mono, outline: "none", width: 60, textAlign: "center" }}
+              title="Maximum number of Thought/Action/Observation loops before stopping"
+            />
+          </div>
         </div>
       </header>
 
@@ -631,7 +643,7 @@ function ReActMathAgent() {
             );
           })}
         </div>
-        <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", fontFamily: mono, letterSpacing: ".08em", whiteSpace: "nowrap" }}>MAX {MAX_LOOPS}</div>
+        <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", fontFamily: mono, letterSpacing: ".08em", whiteSpace: "nowrap" }}>MAX {maxLoops}</div>
       </div>
 
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
