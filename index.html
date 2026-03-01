@@ -202,7 +202,7 @@ const callOllama = async (messages, model, base, signal) => {
       model,
       messages,
       stream: false,
-      options: { temperature: 0, num_predict: 1024 },
+      options: { temperature: 0, num_predict: 4096 },
     }),
   });
   if (!resp.ok) throw new Error(`Ollama ${resp.status}: ${await resp.text()}`);
@@ -216,6 +216,7 @@ const parseResponse = (text) => {
   const lines = text.split("\n");
   let currentThought = null;
   let currentAction = null;
+  let collectingAction = false;
 
   for (const raw of lines) {
     const line = raw.trim();
@@ -223,10 +224,15 @@ const parseResponse = (text) => {
       if (currentThought && currentAction) {
         thoughts.push({ thought: currentThought, action: currentAction });
         currentAction = null;
+        collectingAction = false;
       }
       currentThought = line.replace(/^Thought:\s*/i, "");
     } else if (/^Action:\s*/i.test(line)) {
       currentAction = line.replace(/^Action:\s*/i, "");
+      collectingAction = true;
+    } else if (collectingAction && currentAction) {
+      // Continue collecting multi-line action content (e.g. finish with long output)
+      currentAction += "\n" + line;
     } else if (currentThought && !currentAction) {
       currentThought += " " + line;
     }
@@ -235,29 +241,74 @@ const parseResponse = (text) => {
     thoughts.push({ thought: currentThought, action: currentAction });
   }
   if (!thoughts.length && text.includes("(")) {
-    const m = text.match(/(finish|calculate|solve_quadratic|factor|gcd_lcm|statistics|convert_base)\((.+?)\)/i);
+    const m = text.match(/(finish|calculate|solve_quadratic|factor|gcd_lcm|statistics|convert_base)\((.+)\)/is);
     if (m) thoughts.push({ thought: text.split(m[0])[0].replace(/^Thought:\s*/i, "").trim() || "(implicit reasoning)", action: `${m[1]}(${m[2]})` });
   }
   return thoughts;
 };
 
 const parseAction = (action) => {
-  const m = action.match(/^(\w+)\((.+)\)$/s);
+  // Handle multi-line: find tool name and everything between first ( and last )
+  const cleaned = action.trim();
+  const m = cleaned.match(/^(\w+)\(([\s\S]*)\)$/);
   if (!m) return null;
   return { tool: m[1].toLowerCase(), input: m[2].trim().replace(/^["']|["']$/g, "") };
 };
 
 // ── Stage types ─────────────────────────────────────────────────
-const STAGE = { IDLE: "idle", THINKING: "thinking", THOUGHT: "thought", ACTION: "action", OBSERVATION: "observation", ANSWER: "answer", ERROR: "error" };
+const STAGE = { IDLE: "idle", THINKING: "thinking", RAW: "raw", THOUGHT: "thought", ACTION: "action", OBSERVATION: "observation", ANSWER: "answer", ERROR: "error" };
 const STAGE_META = {
   [STAGE.IDLE]:        { label: "Idle",           color: "#475569", icon: "◇" },
   [STAGE.THINKING]:    { label: "LLM Generating", color: "#f59e0b", icon: "⟳" },
+  [STAGE.RAW]:         { label: "LLM Raw Output", color: "#94a3b8", icon: "⎙" },
   [STAGE.THOUGHT]:     { label: "Thought",        color: "#3b82f6", icon: "◆" },
   [STAGE.ACTION]:      { label: "Action",         color: "#8b5cf6", icon: "▶" },
   [STAGE.OBSERVATION]: { label: "Observation",    color: "#10b981", icon: "◉" },
   [STAGE.ANSWER]:      { label: "Final Answer",   color: "#f43f5e", icon: "★" },
   [STAGE.ERROR]:       { label: "Error",          color: "#ef4444", icon: "✕" },
 };
+
+// ────────────────────────────────────────────────────────────────
+//  LogEntry — collapsible for RAW output
+// ────────────────────────────────────────────────────────────────
+function LogEntry({ step, firstTs, mono }) {
+  const [collapsed, setCollapsed] = useState(step.stage === STAGE.RAW);
+  const meta = STAGE_META[step.stage];
+  const isRaw = step.stage === STAGE.RAW;
+  const preview = isRaw && step.text.length > 120 ? step.text.slice(0, 120) + "…" : step.text;
+
+  return (
+    <div style={{
+      borderLeft: `3px solid ${meta.color}`, background: "#0f172a",
+      borderRadius: "0 8px 8px 0", padding: "10px 14px",
+      opacity: 0, animation: "slideUp .3s ease-out forwards",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4, fontFamily: mono, letterSpacing: ".04em", background: meta.color + "22", color: meta.color }}>
+            {meta.icon} {meta.label}
+          </span>
+          {isRaw && (
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              style={{ background: "none", border: "1px solid #334155", borderRadius: 4, color: "#64748b", fontSize: 9, fontFamily: mono, padding: "1px 6px", cursor: "pointer", letterSpacing: ".04em" }}
+            >
+              {collapsed ? "▸ EXPAND" : "▾ COLLAPSE"} ({step.text.length} chars)
+            </button>
+          )}
+        </div>
+        <span style={{ fontSize: 10, color: "#475569", fontFamily: mono }}>+{((step.ts - firstTs) / 1000).toFixed(1)}s</span>
+      </div>
+      <pre style={{
+        fontSize: isRaw ? 11 : 13,
+        lineHeight: 1.55, color: isRaw ? "#64748b" : "#cbd5e1",
+        fontFamily: mono, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0,
+        maxHeight: collapsed ? 44 : "none", overflow: "hidden",
+        transition: "max-height .3s ease",
+      }}>{collapsed ? preview : step.text}</pre>
+    </div>
+  );
+}
 
 // ────────────────────────────────────────────────────────────────
 //  Component
@@ -317,10 +368,13 @@ function ReActMathAgent() {
         const raw = await callOllama(messages, model, ollamaBase, controller.signal);
         messages.push({ role: "assistant", content: raw });
 
+        // Always show raw LLM output in trace
+        addStep(STAGE.RAW, raw.trim() || "(empty response)");
+
         const parsed = parseResponse(raw);
         if (!parsed.length) {
-          addStep(STAGE.ANSWER, raw.trim());
-          setFinalAnswer(raw.trim());
+          addStep(STAGE.ANSWER, raw.trim() || "(no parseable output)");
+          setFinalAnswer(raw.trim() || "(no parseable output)");
           setCurrentStage(STAGE.ANSWER);
           break;
         }
@@ -487,24 +541,9 @@ function ReActMathAgent() {
                 <p style={{ color: "#64748b", fontSize: 13 }}>Submit a math question to see the ReAct loop in action</p>
               </div>
             )}
-            {steps.map((s, i) => {
-              const meta = STAGE_META[s.stage];
-              return (
-                <div key={i} style={{
-                  borderLeft: `3px solid ${meta.color}`, background: "#0f172a",
-                  borderRadius: "0 8px 8px 0", padding: "10px 14px",
-                  opacity: 0, animation: "slideUp .3s ease-out forwards",
-                }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4, fontFamily: mono, letterSpacing: ".04em", background: meta.color + "22", color: meta.color }}>
-                      {meta.icon} {meta.label}
-                    </span>
-                    <span style={{ fontSize: 10, color: "#475569", fontFamily: mono }}>+{((s.ts - (steps[0]?.ts ?? s.ts)) / 1000).toFixed(1)}s</span>
-                  </div>
-                  <pre style={{ fontSize: 13, lineHeight: 1.55, color: "#cbd5e1", fontFamily: mono, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>{s.text}</pre>
-                </div>
-              );
-            })}
+            {steps.map((s, i) => (
+              <LogEntry key={i} step={s} firstTs={steps[0]?.ts ?? s.ts} mono={mono} />
+            ))}
             {running && (
               <div style={{ padding: "12px 16px", color: "#f59e0b", display: "flex", alignItems: "center", gap: 8, fontFamily: mono, fontSize: 12 }}>
                 <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</span>
