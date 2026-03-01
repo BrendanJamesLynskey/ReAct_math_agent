@@ -220,6 +220,19 @@ const parseResponse = (text) => {
 
   for (const raw of lines) {
     const line = raw.trim();
+
+    // Skip Observation lines the LLM generated itself (it shouldn't, but some models do)
+    if (/^Observation:\s*/i.test(line)) {
+      // If we were collecting an action, finalise it before skipping
+      if (currentThought && currentAction) {
+        thoughts.push({ thought: currentThought, action: currentAction });
+        currentThought = null;
+        currentAction = null;
+        collectingAction = false;
+      }
+      continue;
+    }
+
     if (/^Thought:\s*/i.test(line)) {
       if (currentThought && currentAction) {
         thoughts.push({ thought: currentThought, action: currentAction });
@@ -248,11 +261,27 @@ const parseResponse = (text) => {
 };
 
 const parseAction = (action) => {
-  // Handle multi-line: find tool name and everything between first ( and last )
+  // Clean up: strip anything after closing paren on first complete call
+  // This handles cases where the model appended extra text
   const cleaned = action.trim();
-  const m = cleaned.match(/^(\w+)\(([\s\S]*)\)$/);
-  if (!m) return null;
-  return { tool: m[1].toLowerCase(), input: m[2].trim().replace(/^["']|["']$/g, "") };
+  // Match tool_name( ... ) — find the balanced closing paren
+  const nameMatch = cleaned.match(/^(\w+)\(/);
+  if (!nameMatch) return null;
+  const toolName = nameMatch[1];
+  // Find content between first ( and its matching )
+  let depth = 0;
+  let start = cleaned.indexOf("(");
+  let end = -1;
+  for (let i = start; i < cleaned.length; i++) {
+    if (cleaned[i] === "(") depth++;
+    if (cleaned[i] === ")") { depth--; if (depth === 0) { end = i; break; } }
+  }
+  if (end === -1) {
+    // No closing paren found — take everything after the opening paren
+    return { tool: toolName.toLowerCase(), input: cleaned.slice(start + 1).trim().replace(/^["']|["']$/g, "") };
+  }
+  const input = cleaned.slice(start + 1, end).trim().replace(/^["']|["']$/g, "");
+  return { tool: toolName.toLowerCase(), input };
 };
 
 // ── Stage types ─────────────────────────────────────────────────
@@ -506,7 +535,7 @@ function ReActMathAgent() {
             <span style={{ fontSize: 26, fontWeight: 700, color: "#3b82f6", fontFamily: mono }}>∑</span>
             <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-.02em" }}>ReAct Math Agent</span>
           </div>
-          <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".06em", padding: "3px 10px", borderRadius: 20, background: "#1e293b", color: "#94a3b8", fontFamily: mono }}>Ollama · Qwen3</span>
+          <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".06em", padding: "3px 10px", borderRadius: 20, background: "#1e293b", color: "#94a3b8", fontFamily: mono }}>Ollama · {model}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
